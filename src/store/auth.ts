@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import { persist } from 'zustand/middleware'
+import { persist, createJSONStorage } from 'zustand/middleware'
 import type { User, UserRole } from '@/types'
 
 interface AuthState {
@@ -50,7 +50,18 @@ export const useAuthStore = create<AuthState>()(
     }),
     {
       name: 'aerosync-auth-store',
-      skipHydration: false,
+      // Use localStorage only (avoids SSR crashes on Vercel)
+      storage: createJSONStorage(() => {
+        if (typeof window === 'undefined') {
+          return {
+            getItem: () => null,
+            setItem: () => {},
+            removeItem: () => {},
+          }
+        }
+        return localStorage
+      }),
+      skipHydration: true,
     }
   )
 )

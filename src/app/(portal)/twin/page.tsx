@@ -1,9 +1,6 @@
 'use client'
 
 import { useEffect, useRef, useState, useCallback } from 'react'
-import * as THREE from 'three'
-import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js'
-import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import Link from 'next/link'
 import {
   ArrowRight, RefreshCw, AlertTriangle,
@@ -126,7 +123,12 @@ const STATUS_CONFIG = {
   nominal: { badge: 'bg-emerald-50 text-emerald-800 border-emerald-200', text: 'text-emerald-700', color: '#2e7d52' },
 }
 
-export default function Twin() {
+// Types for lazily-imported Three.js modules
+type ThreeModule = typeof import('three')
+type GLTFLoaderModule = { GLTFLoader: any }
+type OrbitControlsModule = { OrbitControls: any }
+
+export default function TwinPage() {
   const containerRef = useRef<HTMLDivElement>(null)
   const [selectedSub, setSelectedSub] = useState<SubKey>('engine_l')
   const [currentModel, setCurrentModel] = useState<ActiveModel>('rafale')
@@ -136,18 +138,19 @@ export default function Twin() {
   const [screenCoords, setScreenCoords] = useState<Record<string, { x: number; y: number; visible: boolean }>>({})
   const [mounted, setMounted] = useState(false)
 
-  const sceneRef = useRef<THREE.Scene | null>(null)
-  const cameraRef = useRef<THREE.PerspectiveCamera | null>(null)
-  const rendererRef = useRef<THREE.WebGLRenderer | null>(null)
-  const controlsRef = useRef<OrbitControls | null>(null)
-  const currentObjectRef = useRef<THREE.Group | null>(null)
+  // Hold THREE refs as any to avoid top-level import
+  const threeRef = useRef<ThreeModule | null>(null)
+  const sceneRef = useRef<any>(null)
+  const cameraRef = useRef<any>(null)
+  const rendererRef = useRef<any>(null)
+  const controlsRef = useRef<any>(null)
+  const currentObjectRef = useRef<any>(null)
   const animFrameIdRef = useRef<number>(0)
 
   const sub = SUBSYSTEMS[selectedSub]
   const statusTheme = STATUS_CONFIG[sub.status]
 
-  // Create procedural fallback model
-  const createProceduralModel = useCallback((modelType: ActiveModel): THREE.Group => {
+  const createProceduralModel = useCallback((THREE: ThreeModule, modelType: ActiveModel): any => {
     const group = new THREE.Group()
 
     if (modelType === 'rafale') {
@@ -157,7 +160,6 @@ export default function Twin() {
       const fuselage = new THREE.Mesh(fuselageGeo, mat)
       group.add(fuselage)
 
-      // Delta wings
       const wingShape = new THREE.Shape()
       wingShape.moveTo(0, 0)
       wingShape.lineTo(-30, 45)
@@ -167,13 +169,11 @@ export default function Twin() {
       const wingGeo = new THREE.ExtrudeGeometry(wingShape, { depth: 1.5, bevelEnabled: false })
       wingGeo.rotateX(Math.PI / 2)
       const leftWing = new THREE.Mesh(wingGeo, mat)
-      leftWing.position.set(0, 0, 0)
       const rightWing = leftWing.clone()
       rightWing.scale.set(1, 1, -1)
       group.add(leftWing)
       group.add(rightWing)
 
-      // Twin engines
       const engMat = new THREE.MeshStandardMaterial({ color: 0x1a4d4a, metalness: 0.8, roughness: 0.2 })
       const engGeo = new THREE.CylinderGeometry(4.5, 4.5, 24, 16)
       engGeo.rotateZ(Math.PI / 2)
@@ -211,7 +211,8 @@ export default function Twin() {
   const load3DAsset = useCallback(
     (modelType: ActiveModel) => {
       const scene = sceneRef.current
-      if (!scene) return
+      const THREE = threeRef.current
+      if (!scene || !THREE) return
 
       setLoadingModel(true)
       setLoadError(null)
@@ -221,158 +222,182 @@ export default function Twin() {
         currentObjectRef.current = null
       }
 
-      const loader = new GLTFLoader()
       const modelPath = `/models/${modelType}.glb`
 
-      loader.load(
-        modelPath,
-        (gltf) => {
-          const model = gltf.scene
-          const box = new THREE.Box3().setFromObject(model)
-          const center = box.getCenter(new THREE.Vector3())
-          const size = box.getSize(new THREE.Vector3())
-          const maxDim = Math.max(size.x, size.y, size.z)
+      // Dynamic import of GLTFLoader (browser-only)
+      import('three/examples/jsm/loaders/GLTFLoader.js').then(({ GLTFLoader }) => {
+        const loader = new GLTFLoader()
+        loader.load(
+          modelPath,
+          (gltf: any) => {
+            const model = gltf.scene
+            const box = new THREE.Box3().setFromObject(model)
+            const center = box.getCenter(new THREE.Vector3())
+            const size = box.getSize(new THREE.Vector3())
+            const maxDim = Math.max(size.x, size.y, size.z)
 
-          model.position.x = -center.x
-          model.position.y = -center.y
-          model.position.z = -center.z
+            model.position.x = -center.x
+            model.position.y = -center.y
+            model.position.z = -center.z
 
-          model.traverse((node) => {
-            if ((node as THREE.Mesh).isMesh) {
-              const mesh = node as THREE.Mesh
-              if (mesh.material) {
-                const m = mesh.material as THREE.MeshStandardMaterial
-                m.roughness = 0.4
-                m.metalness = 0.5
+            model.traverse((node: any) => {
+              if (node.isMesh) {
+                const m = node.material
+                if (m) {
+                  m.roughness = 0.4
+                  m.metalness = 0.5
+                }
               }
+            })
+
+            const wrapper = new THREE.Group()
+            wrapper.add(model)
+            scene.add(wrapper)
+            currentObjectRef.current = wrapper
+
+            if (cameraRef.current && controlsRef.current) {
+              const camDist = Math.max(120, maxDim * 1.5)
+              cameraRef.current.position.set(camDist * 0.8, camDist * 0.5, camDist * 0.9)
+              cameraRef.current.lookAt(0, 0, 0)
+              controlsRef.current.target.set(0, 0, 0)
+              controlsRef.current.update()
             }
-          })
 
-          const wrapper = new THREE.Group()
-          wrapper.add(model)
-          scene.add(wrapper)
-          currentObjectRef.current = wrapper
-
-          if (cameraRef.current && controlsRef.current) {
-            const camDist = Math.max(120, maxDim * 1.5)
-            cameraRef.current.position.set(camDist * 0.8, camDist * 0.5, camDist * 0.9)
-            cameraRef.current.lookAt(0, 0, 0)
-            controlsRef.current.target.set(0, 0, 0)
-            controlsRef.current.update()
+            setLoadingModel(false)
+          },
+          undefined,
+          () => {
+            const fallback = createProceduralModel(THREE, modelType)
+            scene.add(fallback)
+            currentObjectRef.current = fallback
+            if (cameraRef.current && controlsRef.current) {
+              cameraRef.current.position.set(110, 65, 120)
+              cameraRef.current.lookAt(0, 0, 0)
+              controlsRef.current.target.set(0, 0, 0)
+              controlsRef.current.update()
+            }
+            setLoadingModel(false)
           }
-
-          setLoadingModel(false)
-        },
-        undefined,
-        () => {
-          // Fallback to procedural mesh
-          const fallback = createProceduralModel(modelType)
-          scene.add(fallback)
-          currentObjectRef.current = fallback
-          if (cameraRef.current && controlsRef.current) {
-            cameraRef.current.position.set(110, 65, 120)
-            cameraRef.current.lookAt(0, 0, 0)
-            controlsRef.current.target.set(0, 0, 0)
-            controlsRef.current.update()
-          }
-          setLoadingModel(false)
-        }
-      )
+        )
+      }).catch(() => {
+        if (!threeRef.current) return
+        const fallback = createProceduralModel(threeRef.current, modelType)
+        sceneRef.current?.add(fallback)
+        currentObjectRef.current = fallback
+        setLoadingModel(false)
+      })
     },
     [createProceduralModel]
   )
 
+  // Initialize Three.js scene dynamically (browser-only)
   useEffect(() => {
     setMounted(true)
     const container = containerRef.current
     if (!container) return
 
-    const width = container.clientWidth || 800
-    const height = container.clientHeight || 500
+    let animId = 0
+    let cleanupFn: (() => void) | null = null
 
-    const scene = new THREE.Scene()
-    scene.background = new THREE.Color(0xf8fafb)
-    sceneRef.current = scene
+    // Dynamically import THREE and OrbitControls at runtime only
+    Promise.all([
+      import('three'),
+      import('three/examples/jsm/controls/OrbitControls.js'),
+    ]).then(([THREE, { OrbitControls }]) => {
+      threeRef.current = THREE
 
-    const camera = new THREE.PerspectiveCamera(38, width / height, 0.5, 2000)
-    camera.position.set(110, 65, 120)
-    cameraRef.current = camera
+      const width = container.clientWidth || 800
+      const height = container.clientHeight || 500
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
-    renderer.setSize(width, height)
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
-    renderer.toneMapping = THREE.ACESFilmicToneMapping
-    renderer.toneMappingExposure = 1.15
-    container.appendChild(renderer.domElement)
-    rendererRef.current = renderer
+      const scene = new THREE.Scene()
+      scene.background = new THREE.Color(0xf8fafb)
+      sceneRef.current = scene
 
-    const controls = new OrbitControls(camera, renderer.domElement)
-    controls.enableDamping = true
-    controls.dampingFactor = 0.05
-    controls.maxDistance = 450
-    controls.minDistance = 20
-    controls.autoRotate = autoRotate
-    controls.autoRotateSpeed = 0.8
-    controlsRef.current = controls
+      const camera = new THREE.PerspectiveCamera(38, width / height, 0.5, 2000)
+      camera.position.set(110, 65, 120)
+      cameraRef.current = camera
 
-    const ambientLight = new THREE.AmbientLight(0xffffff, 0.85)
-    scene.add(ambientLight)
+      const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true })
+      renderer.setSize(width, height)
+      renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2))
+      renderer.toneMapping = THREE.ACESFilmicToneMapping
+      renderer.toneMappingExposure = 1.15
+      container.appendChild(renderer.domElement)
+      rendererRef.current = renderer
 
-    const keyLight = new THREE.DirectionalLight(0xffffff, 1.2)
-    keyLight.position.set(100, 150, 100)
-    scene.add(keyLight)
+      const controls = new OrbitControls(camera, renderer.domElement)
+      controls.enableDamping = true
+      controls.dampingFactor = 0.05
+      controls.maxDistance = 450
+      controls.minDistance = 20
+      controls.autoRotate = true
+      controls.autoRotateSpeed = 0.8
+      controlsRef.current = controls
 
-    const fillLight = new THREE.DirectionalLight(0xb4d4e8, 0.6)
-    fillLight.position.set(-100, -50, -100)
-    scene.add(fillLight)
+      const ambientLight = new THREE.AmbientLight(0xffffff, 0.85)
+      scene.add(ambientLight)
+      const keyLight = new THREE.DirectionalLight(0xffffff, 1.2)
+      keyLight.position.set(100, 150, 100)
+      scene.add(keyLight)
+      const fillLight = new THREE.DirectionalLight(0xb4d4e8, 0.6)
+      fillLight.position.set(-100, -50, -100)
+      scene.add(fillLight)
+      const grid = new THREE.GridHelper(260, 26, 0x1a4d4a, 0xdce3e6)
+      grid.position.y = -35
+      scene.add(grid)
 
-    const grid = new THREE.GridHelper(260, 26, 0x1a4d4a, 0xdce3e6)
-    grid.position.y = -35
-    scene.add(grid)
+      const animate = () => {
+        animId = requestAnimationFrame(animate)
+        controls.update()
 
-    const animate = () => {
-      animFrameIdRef.current = requestAnimationFrame(animate)
-      controls.update()
-
-      const newScreenCoords: Record<string, { x: number; y: number; visible: boolean }> = {}
-      if (camera && container) {
-        const halfW = container.clientWidth / 2
-        const halfH = container.clientHeight / 2
-
-        Object.entries(SUBSYSTEMS).forEach(([key, s]) => {
-          const v = new THREE.Vector3(...s.coords)
-          v.project(camera)
-          const visible = v.z < 1
-          const x = v.x * halfW + halfW
-          const y = -(v.y * halfH) + halfH
-          newScreenCoords[key] = { x, y, visible }
-        })
+        const newScreenCoords: Record<string, { x: number; y: number; visible: boolean }> = {}
+        if (camera && container) {
+          const halfW = container.clientWidth / 2
+          const halfH = container.clientHeight / 2
+          Object.entries(SUBSYSTEMS).forEach(([key, s]) => {
+            const v = new THREE.Vector3(...s.coords)
+            v.project(camera)
+            const visible = v.z < 1
+            const x = v.x * halfW + halfW
+            const y = -(v.y * halfH) + halfH
+            newScreenCoords[key] = { x, y, visible }
+          })
+        }
+        setScreenCoords(newScreenCoords)
+        renderer.render(scene, camera)
       }
-      setScreenCoords(newScreenCoords)
-      renderer.render(scene, camera)
-    }
-    animate()
+      animate()
+      animFrameIdRef.current = animId
 
-    const handleResize = () => {
-      if (!container || !renderer || !camera) return
-      const w = container.clientWidth
-      const h = container.clientHeight
-      camera.aspect = w / h
-      camera.updateProjectionMatrix()
-      renderer.setSize(w, h)
-    }
-    window.addEventListener('resize', handleResize)
+      const handleResize = () => {
+        if (!container || !renderer || !camera) return
+        const w = container.clientWidth
+        const h = container.clientHeight
+        camera.aspect = w / h
+        camera.updateProjectionMatrix()
+        renderer.setSize(w, h)
+      }
+      window.addEventListener('resize', handleResize)
+
+      // Load initial model
+      load3DAsset('rafale')
+
+      cleanupFn = () => {
+        cancelAnimationFrame(animId)
+        window.removeEventListener('resize', handleResize)
+        controls.dispose()
+        renderer.dispose()
+        if (container.contains(renderer.domElement)) {
+          container.removeChild(renderer.domElement)
+        }
+      }
+    })
 
     return () => {
-      cancelAnimationFrame(animFrameIdRef.current)
-      window.removeEventListener('resize', handleResize)
-      controls.dispose()
-      renderer.dispose()
-      if (container.contains(renderer.domElement)) {
-        container.removeChild(renderer.domElement)
-      }
+      cleanupFn?.()
     }
-  }, [autoRotate])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   useEffect(() => {
     if (controlsRef.current) {
@@ -381,7 +406,7 @@ export default function Twin() {
   }, [autoRotate])
 
   useEffect(() => {
-    if (mounted) {
+    if (mounted && threeRef.current) {
       load3DAsset(currentModel)
     }
   }, [currentModel, load3DAsset, mounted])
@@ -389,23 +414,12 @@ export default function Twin() {
   const setCameraView = (view: 'perspective' | 'top' | 'side' | 'tail' | 'nose') => {
     if (!cameraRef.current || !controlsRef.current) return
     setAutoRotate(false)
-
     switch (view) {
-      case 'perspective':
-        cameraRef.current.position.set(110, 65, 120)
-        break
-      case 'top':
-        cameraRef.current.position.set(0, 180, 0)
-        break
-      case 'side':
-        cameraRef.current.position.set(0, 10, 180)
-        break
-      case 'tail':
-        cameraRef.current.position.set(-180, 20, 0)
-        break
-      case 'nose':
-        cameraRef.current.position.set(180, 20, 0)
-        break
+      case 'perspective': cameraRef.current.position.set(110, 65, 120); break
+      case 'top': cameraRef.current.position.set(0, 180, 0); break
+      case 'side': cameraRef.current.position.set(0, 10, 180); break
+      case 'tail': cameraRef.current.position.set(-180, 20, 0); break
+      case 'nose': cameraRef.current.position.set(180, 20, 0); break
     }
     controlsRef.current.target.set(0, 0, 0)
     controlsRef.current.update()
@@ -415,7 +429,6 @@ export default function Twin() {
     setSelectedSub(k)
     setAutoRotate(false)
     const targetSub = SUBSYSTEMS[k]
-
     if (targetSub.modelFile !== currentModel) {
       setCurrentModel(targetSub.modelFile)
     } else if (cameraRef.current && controlsRef.current) {
@@ -446,36 +459,19 @@ export default function Twin() {
 
         {/* Model Switcher Buttons */}
         <div className="flex items-center gap-1.5 p-1 bg-white border border-[#dce3e6] rounded-xl shadow-2xs">
-          <button
-            onClick={() => setCurrentModel('rafale')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-              currentModel === 'rafale'
-                ? 'bg-[#1a4d4a] text-white shadow-xs'
-                : 'text-[#4d606a] hover:text-[#173747] hover:bg-slate-50'
-            }`}
-          >
-            Rafale Jet (Full)
-          </button>
-          <button
-            onClick={() => setCurrentModel('landing-gear')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-              currentModel === 'landing-gear'
-                ? 'bg-[#1a4d4a] text-white shadow-xs'
-                : 'text-[#4d606a] hover:text-[#173747] hover:bg-slate-50'
-            }`}
-          >
-            Landing Gear (3D)
-          </button>
-          <button
-            onClick={() => setCurrentModel('radar')}
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
-              currentModel === 'radar'
-                ? 'bg-[#1a4d4a] text-white shadow-xs'
-                : 'text-[#4d606a] hover:text-[#173747] hover:bg-slate-50'
-            }`}
-          >
-            AESA Radar (3D)
-          </button>
+          {(['rafale', 'landing-gear', 'radar'] as ActiveModel[]).map((m) => (
+            <button
+              key={m}
+              onClick={() => setCurrentModel(m)}
+              className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                currentModel === m
+                  ? 'bg-[#1a4d4a] text-white shadow-xs'
+                  : 'text-[#4d606a] hover:text-[#173747] hover:bg-slate-50'
+              }`}
+            >
+              {m === 'rafale' ? 'Rafale Jet (Full)' : m === 'landing-gear' ? 'Landing Gear (3D)' : 'AESA Radar (3D)'}
+            </button>
+          ))}
         </div>
       </div>
 
@@ -499,7 +495,6 @@ export default function Twin() {
                 </button>
               ))}
             </div>
-
             <div className="flex items-center gap-2">
               <button
                 onClick={() => setAutoRotate(!autoRotate)}
@@ -508,7 +503,6 @@ export default function Twin() {
                     ? 'bg-[#e8f4f3] text-[#1a4d4a] border-[#c5e3e0]'
                     : 'bg-white text-[#77878f] border-[#dce3e6]'
                 }`}
-                title="Toggle turntable auto-rotation"
               >
                 <RefreshCw size={11} className={autoRotate ? 'animate-spin' : ''} />
                 <span>Auto-Orbit {autoRotate ? 'ON' : 'OFF'}</span>
@@ -724,7 +718,7 @@ export default function Twin() {
           </div>
 
           <div className="pt-4 border-t border-[#edf2f4] space-y-2">
-            {sub.status === 'critical' || sub.status === 'alarm' ? (
+            {(sub.status === 'critical' || sub.status === 'alarm') && (
               <Link
                 href="/alarms/ALM-8012"
                 className="w-full btn btn-primary py-2.5 text-xs font-semibold shadow-sm flex items-center justify-center gap-1.5"
@@ -732,7 +726,7 @@ export default function Twin() {
                 <span>Open Alarm Telemetry Stream</span>
                 <ArrowRight size={14} />
               </Link>
-            ) : null}
+            )}
             <Link
               href="/schedule"
               className="w-full btn btn-secondary py-2 text-xs font-semibold text-center block"
