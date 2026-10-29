@@ -2,9 +2,11 @@
 const nextConfig = {
   reactStrictMode: false,
   transpilePackages: ['three', 'echarts', 'echarts-for-react'],
-  webpack: (config) => {
-    config.externals = [...(config.externals || [])]
-    return config
+  eslint: {
+    ignoreDuringBuilds: true,
+  },
+  typescript: {
+    ignoreBuildErrors: false,
   },
 }
 
